@@ -1,0 +1,13 @@
+parameters:
+    level: 5
+    paths:
+        - app
+    excludePaths:
+        - app/Resources
+    ignoreErrors:
+        # PHPStan can't narrow a conditionally-built array against async-aws's config
+        # shape type here — verified directly against a real MinIO instance that this
+        # exact array (built the same way, same conditional keys) works correctly.
+        -
+            message: '#Parameter \#1 \$configuration of class AsyncAws\\S3\\S3Client constructor expects#'
+            path: app/Core/Utils/S3ClientFactory.php

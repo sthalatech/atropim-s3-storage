@@ -1,0 +1,52 @@
+{
+  "fields": {
+    "type": {
+      "options": ["__APPEND__", "s3"]
+    },
+    "connection": {
+      "type": "link",
+      "conditionalProperties": {
+        "visible": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        },
+        "required": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        }
+      }
+    },
+    "s3KeyPrefix": {
+      "type": "varchar",
+      "required": false,
+      "trim": true,
+      "tooltip": true,
+      "conditionalProperties": {
+        "visible": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        }
+      }
+    },
+    "s3ScanCursor": {
+      "type": "varchar",
+      "layoutDetailDisabled": true,
+      "layoutListDisabled": true,
+      "massUpdateDisabled": true,
+      "filterDisabled": true,
+      "exportDisabled": true,
+      "importDisabled": true,
+      "textFilterDisabled": true,
+      "emHidden": true
+    }
+  },
+  "links": {
+    "connection": {
+      "type": "belongsTo",
+      "entity": "Connection"
+    }
+  }
+}

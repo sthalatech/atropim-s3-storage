@@ -1,0 +1,12 @@
+{
+  "fields": {
+    "connection": "Connection",
+    "s3KeyPrefix": "Key Prefix"
+  },
+  "labels": {
+    "s3": "Amazon S3 / S3-Compatible"
+  },
+  "tooltips": {
+    "s3KeyPrefix": "Optional prefix applied to every object key in the bucket (e.g. \"atropim/prod\"). Leave blank to store objects at the bucket root."
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "fields": {
+    "s3Region": "Region",
+    "s3Bucket": "Bucket",
+    "s3AccessKeyId": "Access Key ID",
+    "s3SecretAccessKey": "Secret Access Key",
+    "s3Endpoint": "Endpoint (leave blank for AWS)",
+    "s3ForcePathStyle": "Force Path-Style Addressing",
+    "s3VerifyTls": "Verify TLS"
+  },
+  "labels": {
+    "s3": "Amazon S3 / S3-Compatible"
+  },
+  "tooltips": {
+    "s3Endpoint": "Override for S3-compatible non-AWS backends (e.g. MinIO, Cloudflare R2, Wasabi). Leave blank to use AWS's default endpoint for the selected region.",
+    "s3ForcePathStyle": "Enable for most self-hosted S3-compatible backends (e.g. MinIO), which typically require path-style addressing instead of AWS's default virtual-hosted-style.",
+    "s3VerifyTls": "Disabling this rejects nothing over TLS enforcement and is intended only for local development against a plain-HTTP MinIO instance. Leave enabled in production."
+  }
+}

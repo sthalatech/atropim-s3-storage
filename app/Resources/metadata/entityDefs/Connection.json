@@ -1,0 +1,127 @@
+{
+  "fields": {
+    "type": {
+      "options": ["__APPEND__", "s3"]
+    },
+    "s3Region": {
+      "type": "varchar",
+      "notStorable": true,
+      "dataField": true,
+      "required": false,
+      "trim": true,
+      "default": "us-east-1",
+      "conditionalProperties": {
+        "visible": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        },
+        "required": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        }
+      }
+    },
+    "s3Bucket": {
+      "type": "varchar",
+      "notStorable": true,
+      "dataField": true,
+      "required": false,
+      "trim": true,
+      "conditionalProperties": {
+        "visible": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        },
+        "required": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        }
+      }
+    },
+    "s3AccessKeyId": {
+      "type": "varchar",
+      "notStorable": true,
+      "dataField": true,
+      "required": false,
+      "trim": true,
+      "conditionalProperties": {
+        "visible": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        },
+        "required": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        }
+      }
+    },
+    "s3SecretAccessKey": {
+      "type": "password",
+      "notStorable": true,
+      "dataField": true,
+      "required": false,
+      "trim": true,
+      "conditionalProperties": {
+        "visible": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        },
+        "required": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        }
+      }
+    },
+    "s3Endpoint": {
+      "type": "varchar",
+      "notStorable": true,
+      "dataField": true,
+      "required": false,
+      "trim": true,
+      "tooltip": true,
+      "conditionalProperties": {
+        "visible": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        }
+      }
+    },
+    "s3ForcePathStyle": {
+      "type": "bool",
+      "notStorable": true,
+      "dataField": true,
+      "default": false,
+      "tooltip": true,
+      "conditionalProperties": {
+        "visible": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        }
+      }
+    },
+    "s3VerifyTls": {
+      "type": "bool",
+      "notStorable": true,
+      "dataField": true,
+      "default": true,
+      "tooltip": true,
+      "conditionalProperties": {
+        "visible": {
+          "conditionGroup": [
+            {"type": "in", "attribute": "type", "value": ["s3"]}
+          ]
+        }
+      }
+    }
+  }
+}

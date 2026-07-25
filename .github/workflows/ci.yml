@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/php
+            p/javascript
+            p/secrets
+
+  static-analysis-and-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: pdo, pdo_mysql, pdo_pgsql, openssl, fileinfo
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: PHPStan
+        run: vendor/bin/phpstan analyse --no-progress
+
+      - name: PHPUnit (unit tests only — no external services required)
+        run: vendor/bin/phpunit --testsuite unit
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: static-analysis-and-unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: pdo, pdo_mysql, pdo_pgsql, openssl, fileinfo
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Start MinIO fixture
+        run: docker compose -f docker-compose.test.yml up -d --wait
+
+      - name: PHPUnit (integration tests against real MinIO)
+        run: vendor/bin/phpunit --testsuite integration
+        env:
+          S3_STORAGE_TEST_ENDPOINT: http://127.0.0.1:9000
+          S3_STORAGE_TEST_BUCKET: s3storage-test-bucket
+          S3_STORAGE_TEST_ACCESS_KEY: s3storage-test
+          S3_STORAGE_TEST_SECRET_KEY: s3storage-test-secret
+
+      - name: Tear down MinIO fixture
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
