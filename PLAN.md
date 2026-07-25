@@ -49,19 +49,26 @@ Locked-in decisions from user Q&A:
   `getStream()` and streams in 4096-byte chunks with `connection_aborted()` checks — proxy-through
   serving requires zero changes there; `S3Storage::getStream()` just needs to hand back a PSR-7
   stream over the S3 object body.
-- **`getUrl()` must stay app-internal**: `LocalStorage::getUrl()` returns
-  `{siteUrl}/downloads/{id}.{ext}` or `{siteUrl}/images/{id}.{ext}` — never a raw filesystem path.
-  `S3Storage::getUrl()` must return the identical shape so the rest of the app (and end users) never
-  see S3 involved at all.
+- **`getUrl()` must stay app-internal** — `LocalStorage::getUrl()` returns an app-internal
+  `/downloads/{id}.{ext}` or `/images/{id}.{ext}` URL, never a raw path. Design consequence spec'd
+  under S3Storage hardening design below.
 - **Thumbnails are a local cache layer, storage-agnostic by design**: `Core\Utils\Thumbnail` always
   reads/writes `public/{thumbnailsPath}` on local disk regardless of backend.
   `S3Storage::getThumbnail()` should pull original bytes via its own `getContents()` and let the
   existing `Thumbnail` utility render/cache locally — don't invent S3-backed thumbnail storage.
 - **`scan()` is dispatched per-`Storage` by type** from a cron-driven `ScanStorage` job,
   independently guarded — nothing else in core depends on it doing real work to keep functioning.
-  However, since this addon's stated top priority is data integrity and core provides **no other**
-  drift-detection mechanism for any backend, v1 upgrades this from a no-op into a real (bounded)
-  reconciliation pass rather than skipping it — see the `scan()` design below.
+  Design consequence (upgrading it from a safe no-op into real bounded reconciliation) spec'd below.
+- **Postgres is a first-class supported platform, confirmed from source, not MySQL-only**:
+  `app/Atro/Core/Utils/Database/DBAL/Platforms/PostgreSQLPlatform.php` exists alongside
+  `MySQLPlatform.php`/`MariaDBPlatform.php`, each with their own PDO driver. The advisory-lock design
+  below keeps both `GET_LOCK`/`pg_advisory_lock` code paths — dropping either would break real
+  deployments (the reference `atropim` VM itself runs Postgres 15).
+- **`PDO::ATTR_PERSISTENT` is off by default and MySQL-only**: `MySQL/Driver.php:54` only sets it
+  `if (!empty($params['persistent']))` — an explicit opt-in with no default config enabling it
+  anywhere in the repo — and `PgSQL/Driver.php` doesn't implement the option at all. So under
+  standard configuration, each HTTP request gets exactly one non-persistent PDO connection for its
+  lifetime, which the locking design below relies on.
 - **Upload data actually arrives fully in memory as base64, not as a seekable stream/tmp file** —
   traced the real path: client-side `client/src/views/file/fields/upload.js` does
   `FileReader.readAsDataURL(file)` and POSTs JSON with `fileContents` as a base64 data-URI string
@@ -171,6 +178,9 @@ On `Storage.json`, append `"s3"` to `fields.type.options` via `__APPEND__`, then
 - `s3KeyPrefix` (varchar, optional) — key prefix within the bucket, the S3 analogue of the existing
   `path` field for `local` storages (kept as a separate field rather than overloading `path`, to
   avoid confusing local-disk-path semantics with an S3 key prefix).
+- `s3ScanCursor` (varchar, hidden from the edit layout, internal use only) — last-processed `File`
+  id for the `scan()` resume cursor described below; not user-facing config, just addon-internal
+  state stored on the existing entity rather than a new DB table.
 
 ## S3Storage — hardening design (the core of the "no corruption/no data loss" requirement)
 
@@ -187,6 +197,20 @@ On `Storage.json`, append `"s3"` to `fields.type.options` via `__APPEND__`, then
   `s3SecretAccessKey` via the existing `Connection` service's `decryptPassword()`, builds an
   `AsyncAws\S3\S3Client` with region/endpoint/path-style/TLS options. Secret values are never logged
   and never interpolated into exception messages.
+- **In-memory size ceiling — concrete, enforced, not just documented**: the upload path buffers the
+  payload ~3.7× (raw POST body 1.33× + `json_decode`'s copy of the base64 string 1.33× +
+  `base64_decode()` output 1.0×) on top of AtroCore's own per-request baseline (~60MB for a
+  metadata/ORM-heavy PIM request). Solving `(memory_limit − 60MB) / 3.7` gives concrete reference
+  points: **~45MB max file at a 256MB `memory_limit`**, **~100MB max file at 512MB** — both under the
+  100MB multipart-slice threshold below, meaning a large non-chunked upload can hit a PHP OOM fatal
+  *before* slicing logic ever runs. `createFile()` therefore computes
+  `strlen($base64) * 3/4` (no decode needed for the estimate) against a limit computed at runtime
+  from `ini_get('memory_limit')` via the same formula, and **rejects before calling
+  `base64_decode()`** if it's over, with a clear, catchable error rather than risking an OOM crash.
+  This can't undo memory the framework already spent buffering the POST body/JSON before our code
+  runs, but it stops the addon from adding the final decode+upload allocation on top of an already
+  tight request. README documents both reference numbers and recommends the chunked-upload UI path
+  (true S3 multipart, never fully buffered) for installs expecting routinely large media.
 - **`createFile()` (new upload, non-chunked path)**:
   1. `base64_decode()` the `_input->fileContents` payload once (as core itself already does), compute
      a SHA-256 checksum over the resulting bytes.
@@ -216,23 +240,42 @@ On `Storage.json`, append `"s3"` to `fields.type.options` via `__APPEND__`, then
   `UploadPart` with its own checksum, verified before acknowledging that chunk to the client; the
   final chunk triggers `CompleteMultipartUpload` once all part checksums are confirmed. This means a
   large file's bytes are never fully buffered on the PHP side at all, on top of never touching local
-  disk — a stronger guarantee than core's own local-chunk-file approach.
+  disk — a stronger guarantee than core's own local-chunk-file approach. **Cleanup on failure**: any
+  part failure or exhausted-retry checksum mismatch triggers an explicit `AbortMultipartUpload` in a
+  catch/finally around the sequence (this is the catchable-failure case). As a backstop for the
+  uncatchable case — the PHP process itself hard-crashing (OOM-kill, fatal error, server reboot)
+  mid-upload, where no application code runs at all — the README recommends a bucket lifecycle rule
+  (`AbortIncompleteMultipartUpload` after 1 day) so orphaned multipart uploads don't silently
+  accumulate storage cost/clutter regardless of how the failure happened.
 - **`reupload()` / overwrite of existing content — locking + safe-swap**: core provides **no**
   concurrency control on reupload for any backend today (confirmed: plain PDO transaction only, no
   row lock, no advisory lock, and the one staleness flag is explicitly disabled for this path — see
   above). The addon adds its own protection, stricter than core's local-disk guarantee:
-  1. Acquire a DB-backed advisory lock scoped to the `File` id before the critical section — branch
-     on the configured DB driver (`GET_LOCK()` on MySQL/MariaDB, `pg_advisory_lock()` on PostgreSQL,
-     detected via the same platform info AtroCore's own DB layer already exposes) so it works
-     correctly regardless of which of AtroCore's two supported DB engines the install uses, and
-     centrally (works across multi-host app-server deployments, not just single-host `flock()`).
-  2. Upload the new content to a temporary key (`{key}.uploading.{uuid}`), verify its checksum there.
-  3. `CopyObject` the verified temp object onto the real key, then delete the temp key.
-  4. Release the advisory lock (in a `finally`, so a thrown exception never leaves it held).
-  5. If verification fails at step 2: delete the temp object, leave the original completely
+  1. Fetch the DBAL `Connection` object from the container **exactly once**, hold it in a local
+     variable for the whole method — nothing in the sequence re-resolves the connection service, so
+     there's no path for it to be swapped mid-method. Confirmed safe under default configuration:
+     `PDO::ATTR_PERSISTENT` is off by default and only even implemented for the MySQL driver (see
+     grounding above), so each request already gets one dedicated non-persistent connection; this
+     code just makes sure our own logic doesn't re-fetch a second, potentially different one.
+  2. Using that connection, attempt a **non-blocking** advisory lock scoped to the `File` id —
+     `GET_LOCK(name, 0)` on MySQL/MariaDB, `pg_try_advisory_lock(key)` on PostgreSQL (branch on
+     platform, both kept — see grounding above). **Fail fast, don't block-with-timeout**: if the lock
+     is already held, immediately throw a `Conflict`-style exception with the message
+     `"This file is currently being updated by another process. Please try again in a few seconds."`
+     and log a WARNING server-side with the file/storage IDs. Blocking would risk stacking up
+     PHP-FPM workers on a small VM; failing fast lets the user retry a normal HTTP request instead.
+  3. Upload the new content to a temporary key (`{key}.uploading.{uuid}`), verify its checksum there.
+  4. `CopyObject` the verified temp object onto the real key, then delete the temp key.
+  5. Release the advisory lock (`RELEASE_LOCK()`/`pg_advisory_unlock()`) in a `finally` using the
+     same connection reference from step 1, so a thrown exception never leaves it held. Documented
+     caveat for the (non-default, opt-in) MySQL persistent-connection case: a hard process crash
+     between acquire and the `finally` could in rare cases leave a stale lock on a pooled connection
+     until it cycles — mitigated by giving the lock a bounded max hold rather than relying solely on
+     connection-scoped auto-release as the only safety net.
+  6. If verification fails at step 3: delete the temp object, leave the original completely
      untouched, release the lock, throw — a failed overwrite can never destroy the original (a direct
      same-key `PutObject` would have already destroyed it before verification could run), and a
-     second concurrent reupload can never interleave with this one.
+     second concurrent reupload can never interleave with this one (it fails fast at step 2 instead).
 - **`renameFile`/`moveFile`**: `CopyObject` to the new key, verify (`HeadObject` checksum/ETag
   compare), only then `DeleteObject` the old key — same copy-verify-then-delete-original pattern.
 - **`deleteFilePermanently()`**: real `DeleteObject`; README recommends enabling S3 bucket
@@ -245,18 +288,34 @@ On `Storage.json`, append `"s3"` to `fields.type.options` via `__APPEND__`, then
   `getContents()` on cache miss.
 - **`isAvailable()`**: lightweight `HeadBucket` with a short timeout, catch and return `false` on
   any failure — used for admin health checks / a "Test Connection" action.
-- **`scan()` — real bounded reconciliation, not a no-op**: given integrity is the addon's top stated
-  goal and core has no other drift-detection path for this or any backend, v1 implements a genuine
-  (but scoped) check rather than skipping it: paginate through `File` DB records assigned to this
-  `Storage` in batches, `HeadObject` each one, and compare the returned checksum/ETag against the
-  `File` entity's own stored `hash` attribute (confirmed to exist — core's reupload race finding
-  showed `hash`/`fileSize`/`mimeType` as metadata that can drift from actual bytes). Any mismatch or
-  missing object is logged as a flagged integrity failure surfaced through the same job/log channel
-  `ScanStorage` already uses, so drift becomes visible via existing admin tooling rather than silent.
-  Scoped explicitly as DB-driven (not an S3 `ListObjectsV2` bucket walk) to keep cost predictable and
-  bounded by the number of `File` records rather than bucket size; the README documents this scope
-  choice and notes that S3-side orphan objects (present in the bucket, no matching DB record) are a
-  separate, rarer failure mode not covered by v1's scan.
+- **`scan()` — real bounded reconciliation, not a no-op, with concrete bounds**: given integrity is
+  the addon's top stated goal and core has no other drift-detection path for this or any backend, v1
+  implements a genuine, scoped check:
+  - **Bound**: process up to **500 `File` records per invocation, or a 240-second wall-clock cap,
+    whichever hits first.** Each `HeadObject`-per-record call is far more expensive than the local
+    `stat()` calls core's own local scan does, so the batch is kept deliberately small and
+    time-boxed rather than sized like core's local-disk batches.
+  - **Resume cursor**: a new `Storage.s3ScanCursor` field (last-processed `File` id) is written at
+    the end of each invocation. The next scheduled run (core's existing cron-driven `ScanStorage`
+    job dispatch) resumes from that cursor rather than rescanning from the start; once the cursor
+    reaches the end of the `File` list for that `Storage`, it wraps back to the beginning — a
+    continuously-cycling, resumable sweep, not a one-shot.
+  - **Skips in-progress reuploads instead of flagging false-positive drift**: before `HeadObject`-
+    checking a given record, `scan()` does a non-blocking try-lock probe using the *same* shared
+    advisory-lock utility `reupload()` uses (acquire-then-immediately-release, just as a probe — it
+    doesn't hold the lock during the check). If the lock is already held elsewhere (a reupload of
+    that file is actively in progress right now), `scan()` skips that record for this pass and picks
+    it up on a later cycle, rather than comparing against a transitionally-inconsistent temp/real key
+    state and reporting spurious drift.
+  - Each mismatch or missing object is compared against the `File` entity's own stored `hash`
+    attribute (confirmed to exist — core's reupload-race finding showed `hash`/`fileSize`/`mimeType`
+    as metadata that can drift from actual bytes) and logged as a flagged integrity failure through
+    the same job/log channel `ScanStorage` already uses, so drift becomes visible via existing admin
+    tooling rather than silent.
+  - Scoped explicitly as DB-driven (walking `File` records, not an S3 `ListObjectsV2` bucket walk) to
+    keep cost predictable and bounded by record count rather than bucket size; the README documents
+    this scope choice and notes that S3-side orphan objects (present in the bucket, no matching DB
+    record) are a separate, rarer failure mode not covered by v1's scan.
 - **`createFolder`/`deleteCache`**: folders are virtual (prefix-based) in S3, so `createFolder` is a
   no-op; `deleteCache` clears any local thumbnail cache for the file.
 
@@ -298,14 +357,18 @@ On `Storage.json`, append `"s3"` to `fields.type.options` via `__APPEND__`, then
 
 - **Unit tests** (mocked `async-aws` HTTP responses): checksum match/mismatch/retry-then-fail
   paths, temp-key-copy-then-delete overwrite logic never destroys the original on failure, advisory
-  lock is always released (including on thrown exceptions), a simulated concurrent-reupload race
-  never interleaves, multipart slicing triggers at the 100MB threshold and reassembles correctly,
-  and no secret ever appears in a thrown exception's message.
+  lock is always released (including on thrown exceptions) using the same connection reference,
+  a second lock attempt fails fast with the exact documented error message rather than blocking,
+  a simulated concurrent-reupload race never interleaves, the pre-decode size check rejects an
+  oversized payload before `base64_decode()` runs, multipart slicing triggers at the 100MB threshold
+  and reassembles correctly, a failed multipart part triggers `AbortMultipartUpload`, `scan()`
+  correctly skips a record whose lock is held (no false-positive drift) and correctly advances/wraps
+  `s3ScanCursor`, and no secret ever appears in a thrown exception's message.
 - **Integration tests**: real MinIO container via `docker-compose.test.yml` in CI — full
   upload/download round-trip with byte-for-byte checksum comparison, overwrite-then-verify, delete,
-  `scan()` correctly flagging a deliberately corrupted/missing object, and an injected-corruption
-  case (mock a bit-flipped ETag/checksum response) to confirm the addon rejects and fails loudly
-  rather than silently accepting bad data.
+  `scan()` correctly flagging a deliberately corrupted/missing object across a resumed cursor, and an
+  injected-corruption case (mock a bit-flipped ETag/checksum response) to confirm the addon rejects
+  and fails loudly rather than silently accepting bad data.
 - **Manual end-to-end**: I don't currently have SSH access to the `atropim` VM from this sandbox
   (confirmed — no key/agent available), so live verification against the real AtroPIM instance at
   `atropim.exe.xyz` will need either you running the install/verification steps there yourself
