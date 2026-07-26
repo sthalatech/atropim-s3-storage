@@ -42,11 +42,25 @@ is not part of AtroCore's official module store, so it's added as a plain VCS re
    ```
 
 2. From your AtroPIM root, run the **AtroCore-embedded Composer** (not your system Composer — the
-   embedded one contains modifications needed for backup/restore during updates):
+   embedded one contains modifications needed for backup/restore during updates), **as the same
+   system user your web server runs as** (commonly `www-data`) — not as `root` via `sudo`, and not
+   as your own login user, unless that's also who owns `data/`, `vendor/`, and `public/` today:
 
    ```bash
    php composer.phar update
    ```
+
+   Running it as a different user than the web server is a common self-hosted-PHP pitfall, not
+   specific to this addon: it leaves cache/vendor files owned by the wrong user, so the web server
+   process can no longer write to `data/cache/` afterward — which tends to surface as unrelated-
+   looking failures (e.g. a generic "Record cannot be created" when saving *any* entity, not just a
+   `Connection`). If you did run it as a different user, fix ownership immediately after:
+
+   ```bash
+   chown -R www-data:www-data data vendor public composer.json composer.lock
+   ```
+
+   (substitute `www-data` for whatever user your web server actually runs as, if different).
 
 3. Go to **Administration → System → Update & Modules** and confirm "S3 Storage" is listed as
    installed/enabled. If not, run `php composer.phar update` again — module discovery reads
@@ -159,6 +173,22 @@ fallback path isn't mistaken for dead code.
   seconds."* rather than queuing — see `PLAN.md` for why (avoiding PHP-FPM worker pileups) and for
   the DB-advisory-lock mechanism (MySQL `GET_LOCK`/PostgreSQL `pg_advisory_lock`, both directly
   tested against real databases) that enforces it.
+
+## Troubleshooting
+
+**"Record cannot be created/saved" on a `Connection` or `Storage`, or seemingly unrelated failures
+elsewhere in the app, right after installing this addon** — almost always a file-ownership
+mismatch from step 2 of [Installation](#installation), not this addon's own logic: if
+`composer.phar update` was run as a different system user than your web server runs as (e.g. `root`
+via `sudo`), `data/cache/` (and possibly `vendor/`, `public/`) end up owned by that user, and the
+web server can no longer write new cache files — which surfaces as generic save failures across
+the whole app, not just S3-related ones. Fix:
+
+```bash
+chown -R www-data:www-data data vendor public composer.json composer.lock
+```
+
+(substitute `www-data` for your actual web server user) — then retry.
 
 ## Development
 
