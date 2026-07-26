@@ -21,6 +21,7 @@ use Atro\Core\Exceptions\BadRequest;
 use Atro\Core\Exceptions\Conflict;
 use Atro\Core\Exceptions\Error;
 use Atro\Core\FileStorage\FileStorageInterface;
+use Atro\Core\FileStorage\LocalFileStorageInterface;
 use Atro\Core\Utils\Config;
 use Atro\Core\Utils\FileManager;
 use Atro\Core\Utils\Thumbnail;
@@ -48,8 +49,16 @@ use S3Storage\Core\Utils\S3ClientFactory;
  *    overwrite can never destroy the original.
  *  - Concurrent reuploads of the same File are serialized via a non-blocking DB advisory
  *    lock (core provides no concurrency control here at all, for any backend).
+ *  - Implements LocalFileStorageInterface: some core code (EntryPoints/Thumbnail.php)
+ *    calls File::getFilePath(), which for a non-LocalFileStorageInterface backend falls
+ *    back to getUrl() — an app-internal URL, not a real filesystem path — and silently
+ *    breaks thumbnail/preview generation for anything other than local storage. We
+ *    implement getLocalPath() to download to a real temp file instead, fixing this
+ *    without touching core. (Repositories\File::addDimensions() already has its own
+ *    correct fallback for non-local storage and needs no help; this only covers the
+ *    gap in the Thumbnail entry point specifically.)
  */
-class S3FileStorage implements FileStorageInterface
+class S3FileStorage implements FileStorageInterface, LocalFileStorageInterface
 {
     /** Single PutObject beyond this size is sliced into a real multipart upload. */
     private const MULTIPART_THRESHOLD_BYTES = 100 * 1024 * 1024;
@@ -66,6 +75,11 @@ class S3FileStorage implements FileStorageInterface
     /** Local, disk-persisted (NOT memoryStorage — that cache is per-request only and
      *  would not survive between the separate HTTP requests a chunked upload spans). */
     private const MULTIPART_ABANDON_SECONDS = 86400;
+
+    /** getLocalPath() downloads a fresh temp copy per call (never reused/cached across
+     *  calls, so a reupload can never be served from a stale temp copy) — this just
+     *  bounds how long an unclaimed temp file can sit before deleteCache() sweeps it. */
+    private const LOCAL_PATH_TMP_ABANDON_SECONDS = 3600;
 
     protected Container $container;
     private ?S3ClientFactory $s3ClientFactory = null;
@@ -251,6 +265,31 @@ class S3FileStorage implements FileStorageInterface
 
             @unlink($path);
         }
+
+        $this->sweepLocalPathTmpDir();
+    }
+
+    private function sweepLocalPathTmpDir(): void
+    {
+        $dir = $this->localPathTmpDir();
+        if (!is_dir($dir)) {
+            return;
+        }
+
+        $cutoff = time() - self::LOCAL_PATH_TMP_ABANDON_SECONDS;
+        foreach ((scandir($dir) ?: []) as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            $path = $dir . '/' . $entry;
+            $mtime = @filemtime($path);
+            if ($mtime === false || $mtime >= $cutoff) {
+                continue;
+            }
+
+            @unlink($path);
+        }
     }
 
     public function renameFile(File $file): bool
@@ -403,6 +442,30 @@ class S3FileStorage implements FileStorageInterface
         $key = $this->buildKey($storage, (string)$file->get('id'));
 
         return $client->getObject(['Bucket' => $bucket, 'Key' => $key])->getBody()->getContentAsString();
+    }
+
+    /**
+     * Downloads a fresh temp copy of the object for code that needs a real local path
+     * (currently: EntryPoints/Thumbnail.php via Repositories\File::getFilePath()). Always
+     * re-downloads rather than reusing any previous copy, so a reupload can never result
+     * in stale content being read here. The $fetched flag is meaningful for LocalStorage's
+     * rename-in-progress old/new path distinction, which doesn't apply to us (our S3 key
+     * is the immutable File id, never derived from name/path), so it's ignored.
+     */
+    public function getLocalPath(File $file, bool $fetched = false): string
+    {
+        $dir = $this->localPathTmpDir();
+        if (!is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
+
+        $extension = (string)$file->get('extension');
+        $suffix = $extension !== '' ? '.' . $extension : '';
+        $path = $dir . '/' . $file->get('id') . '.' . bin2hex(random_bytes(8)) . $suffix;
+
+        file_put_contents($path, $this->getContents($file));
+
+        return $path;
     }
 
     public function isAvailable(Storage $storage): bool
@@ -807,6 +870,11 @@ class S3FileStorage implements FileStorageInterface
     private function multipartStatePath(string $hash): string
     {
         return $this->multipartStateDir() . '/' . preg_replace('/[^A-Za-z0-9_-]/', '_', $hash) . '.json';
+    }
+
+    private function localPathTmpDir(): string
+    {
+        return rtrim((string)($this->getConfig()->get('uploadRootPath') ?: 'data/upload'), '/') . '/.s3-storage-localpath-tmp';
     }
 
     private function loadMultipartState(string $hash): ?array
