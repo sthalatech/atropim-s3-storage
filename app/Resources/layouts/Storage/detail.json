@@ -1,0 +1,12 @@
+[
+  {
+    "label": "Amazon S3 / S3-Compatible",
+    "style": "default",
+    "rows": [
+      [
+        {"name": "connection"},
+        {"name": "s3KeyPrefix"}
+      ]
+    ]
+  }
+]

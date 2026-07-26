@@ -1,0 +1,24 @@
+[
+  {
+    "label": "Amazon S3 / S3-Compatible",
+    "style": "default",
+    "rows": [
+      [
+        {"name": "s3Region"},
+        {"name": "s3Bucket"}
+      ],
+      [
+        {"name": "s3AccessKeyId"},
+        {"name": "s3SecretAccessKey"}
+      ],
+      [
+        {"name": "s3Endpoint"},
+        false
+      ],
+      [
+        {"name": "s3ForcePathStyle"},
+        {"name": "s3VerifyTls"}
+      ]
+    ]
+  }
+]
