@@ -12,6 +12,8 @@
     "s3": "Amazon S3 / S3-Compatible"
   },
   "tooltips": {
+    "s3AccessKeyId": "Leave both this and Secret Access Key blank to authenticate via the server's own IAM identity instead (an EC2 instance profile role, an ECS task role, or an IRSA-bound service account) — recommended when running on AWS infrastructure that already has one attached.",
+    "s3SecretAccessKey": "Leave both this and Access Key ID blank to authenticate via the server's own IAM identity instead (an EC2 instance profile role, an ECS task role, or an IRSA-bound service account) — recommended when running on AWS infrastructure that already has one attached.",
     "s3Endpoint": "Override for S3-compatible non-AWS backends (e.g. MinIO, Cloudflare R2, Wasabi). Leave blank to use AWS's default endpoint for the selected region.",
     "s3ForcePathStyle": "Enable for most self-hosted S3-compatible backends (e.g. MinIO), which typically require path-style addressing instead of AWS's default virtual-hosted-style.",
     "s3VerifyTls": "Disabling this rejects nothing over TLS enforcement and is intended only for local development against a plain-HTTP MinIO instance. Leave enabled in production."

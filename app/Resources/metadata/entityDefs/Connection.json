@@ -48,13 +48,9 @@
       "dataField": true,
       "required": false,
       "trim": true,
+      "tooltip": true,
       "conditionalProperties": {
         "visible": {
-          "conditionGroup": [
-            {"type": "in", "attribute": "type", "value": ["s3"]}
-          ]
-        },
-        "required": {
           "conditionGroup": [
             {"type": "in", "attribute": "type", "value": ["s3"]}
           ]
@@ -67,13 +63,9 @@
       "dataField": true,
       "required": false,
       "trim": true,
+      "tooltip": true,
       "conditionalProperties": {
         "visible": {
-          "conditionGroup": [
-            {"type": "in", "attribute": "type", "value": ["s3"]}
-          ]
-        },
-        "required": {
           "conditionGroup": [
             {"type": "in", "attribute": "type", "value": ["s3"]}
           ]

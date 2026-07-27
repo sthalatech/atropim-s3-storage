@@ -287,7 +287,19 @@ On `Storage.json`, append `"s3"` to `fields.type.options` via `__APPEND__`, then
 - **`getThumbnail()`**: delegate to the existing `Thumbnail` utility, sourcing original bytes via
   `getContents()` on cache miss.
 - **`isAvailable()`**: lightweight `HeadBucket` with a short timeout, catch and return `false` on
-  any failure — used for admin health checks / a "Test Connection" action.
+  any failure — used for admin health checks.
+- **Test Connection**: `app/Core/ConnectionType/ConnectionS3.php` registers the `s3` entry in
+  AtroCore's `app.connectionTypes` metadata (a plain associative map — confirmed via
+  `Atro\Core\Utils\Util::merge()` source that a new top-level key merges additively, no
+  `__APPEND__` needed, since only sequential/list arrays get replaced wholesale) and implements
+  `Atro\ConnectionType\ConnectionInterface` + `TestConnectionInterface`. This plugs into AtroCore's
+  **existing, generic** "Test Connection" button (`client/src/views/connection/record/detail.js` —
+  shown for every connection type except `smtp`, no addon-side frontend code needed) and
+  `Atro\Services\Connection::testConnection()`'s dispatch. `connect()` alone would not be a real
+  test here — unlike a PDO/FTP connection, constructing an `S3Client` performs no network I/O, so
+  `TestConnectionInterface::testConnection()` explicitly does a real `bucketExists()` call (the
+  same pattern `isAvailable()` uses), throwing a clear `BadRequest` on failure rather than the
+  generic fallback's silent `connect(); return true;`.
 - **`scan()` — real bounded reconciliation, not a no-op, with concrete bounds**: given integrity is
   the addon's top stated goal and core has no other drift-detection path for this or any backend, v1
   implements a genuine, scoped check:
@@ -325,6 +337,17 @@ On `Storage.json`, append `"s3"` to `fields.type.options` via `__APPEND__`, then
   disabled (dev/MinIO only), with a loud warning logged when disabled.
 - Secrets never appear in logs, exceptions, or API responses; `s3SecretAccessKey` stays encrypted
   at rest via the existing audited `Encrypter`.
+- **Static keys are optional, not mandatory** — `S3ClientFactory::buildClientConfig()` only
+  includes `accessKeyId`/`accessKeySecret` in the async-aws config when an Access Key ID is
+  actually configured on the Connection; leaving both fields blank omits them from the config
+  entirely (not as empty strings — that distinction is what matters, since async-aws/core treats a
+  present-but-blank credential as an explicit static credential, not a signal to fall back). This
+  lets `async-aws/s3`'s own default credential provider chain take over — env vars → shared
+  `~/.aws/credentials` → ECS container credentials → EC2 instance-profile role via IMDS — matching
+  the AWS SDKs' own standard behavior, so a host with an IAM role already attached (the AWS-
+  recommended posture vs. long-lived static keys) needs no credentials configured on the Connection
+  at all. A partially-filled pair (one field set, the other blank) is rejected with a clear error
+  rather than silently guessing which mode was intended.
 - S3 object keys are derived from `File` entity UUIDs (already collision-resistant, not
   user-controlled path input) — still explicitly validate/sanitize before use to close off any
   path-traversal/injection vector.

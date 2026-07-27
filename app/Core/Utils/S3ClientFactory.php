@@ -32,33 +32,84 @@ final class S3ClientFactory
 
     public function create(StorageEntity $storage): S3Client
     {
-        $connection = $this->getConnection($storage);
+        return $this->createFromConnection($this->getConnection($storage));
+    }
 
-        $config = [
-            'region' => (string)$connection->get('s3Region'),
-            'accessKeyId' => (string)$connection->get('s3AccessKeyId'),
-            'accessKeySecret' => $this->decryptSecret((string)$connection->get('s3SecretAccessKey')),
-        ];
+    /**
+     * Builds a client directly from a Connection record, without requiring a Storage that
+     * links to it — used by the "Test Connection" action (ConnectionType\ConnectionS3), which
+     * only ever has the Connection entity itself, never a Storage.
+     */
+    public function createFromConnection(ConnectionEntity $connection): S3Client
+    {
+        $accessKeyId = trim((string)$connection->get('s3AccessKeyId'));
+        $hasSecret = trim((string)$connection->get('s3SecretAccessKey')) !== '';
+
+        if ($accessKeyId === '' && $hasSecret) {
+            throw new Error(
+                "S3 connection '{$connection->get('name')}': Secret Access Key is set without an " .
+                "Access Key ID. Provide both, or leave both blank to authenticate via the server's " .
+                "own IAM role instead of static keys."
+            );
+        }
+
+        $accessKeySecret = $accessKeyId !== '' ? $this->decryptSecret((string)$connection->get('s3SecretAccessKey')) : '';
 
         $endpoint = trim((string)$connection->get('s3Endpoint'));
         $verifyTls = $connection->get('s3VerifyTls');
         $verifyTls = $verifyTls === null ? true : (bool)$verifyTls;
 
+        if ($endpoint !== '' && $verifyTls && !str_starts_with(strtolower($endpoint), 'https://')) {
+            throw new Error(
+                "S3 connection '{$connection->get('name')}': endpoint must use https:// unless " .
+                "'Verify TLS' is explicitly disabled (intended for local development against MinIO only)."
+            );
+        }
+
+        $config = $this->buildClientConfig(
+            (string)$connection->get('s3Region'),
+            $accessKeyId,
+            $accessKeySecret,
+            $endpoint,
+            !empty($connection->get('s3ForcePathStyle'))
+        );
+
+        return new S3Client($config);
+    }
+
+    /**
+     * Static keys are only included in the config when an Access Key ID is actually configured.
+     * Omitting both credential keys entirely (rather than passing empty strings) is what lets
+     * async-aws/core's own default credential provider chain take over — environment variables,
+     * the shared ~/.aws/credentials file, ECS container credentials, and finally the EC2 instance's
+     * attached IAM role via IMDS — exactly like the AWS SDK's own behavior when no explicit
+     * credentials are passed to its S3 client constructor. Passing empty-string credentials instead
+     * would be treated as explicit (but blank) static credentials and would NOT fall back to the
+     * instance role.
+     */
+    private function buildClientConfig(
+        string $region,
+        string $accessKeyId,
+        string $accessKeySecret,
+        string $endpoint,
+        bool $forcePathStyle
+    ): array {
+        $config = ['region' => $region];
+
+        if ($accessKeyId !== '') {
+            $config['accessKeyId'] = $accessKeyId;
+            $config['accessKeySecret'] = $accessKeySecret;
+        }
+
         if ($endpoint !== '') {
-            if ($verifyTls && !str_starts_with(strtolower($endpoint), 'https://')) {
-                throw new Error(
-                    "S3 connection '{$connection->get('name')}': endpoint must use https:// unless " .
-                    "'Verify TLS' is explicitly disabled (intended for local development against MinIO only)."
-                );
-            }
             $config['endpoint'] = $endpoint;
         }
 
-        if (!empty($connection->get('s3ForcePathStyle'))) {
+        if ($forcePathStyle) {
             $config['pathStyleEndpoint'] = true;
         }
 
-        return new S3Client($config);
+        return $config;
     }
 
     public function getConnection(StorageEntity $storage): ConnectionEntity

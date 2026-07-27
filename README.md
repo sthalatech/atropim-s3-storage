@@ -79,7 +79,10 @@ AtroPIM install can have several S3 storages side by side with different buckets
    - **Bucket**
    - **Access Key ID** / **Secret Access Key** — the secret is encrypted at rest using AtroCore's
      existing `Encrypter` (the same mechanism protecting SMTP/database connection passwords), not
-     custom crypto
+     custom crypto. **Leave both fields blank** to authenticate via the server's own IAM identity
+     instead (an EC2 instance profile role, an ECS task role, or an IRSA-bound service account) —
+     recommended over static keys whenever the host already has one attached. See
+     [Authenticating via an IAM role](#authenticating-via-an-iam-role-instead-of-static-keys) below.
    - **Endpoint** — leave blank for AWS; set for MinIO/R2/Wasabi/etc.
    - **Force Path-Style Addressing** — enable for most self-hosted S3-compatible backends
    - **Verify TLS** — leave enabled in production; only disable for local development against a
@@ -93,11 +96,39 @@ AtroPIM install can have several S3 storages side by side with different buckets
    that folder now land in S3; existing files already in other storages are unaffected (this
    release does not include a bulk-migration tool — see [Limitations](#known-limitations)).
 
+### Authenticating via an IAM role instead of static keys
+
+If the AtroPIM host already runs with an IAM identity attached (an EC2 instance profile role, an
+ECS task role, or an IRSA-bound service account on EKS), leave **Access Key ID** and **Secret
+Access Key** both blank on the Connection record. With no static credentials configured, this
+addon omits them from the S3 client entirely rather than passing blank values — which is what lets
+the underlying `async-aws/s3` SDK fall through to its own default credential provider chain
+(environment variables → shared `~/.aws/credentials` file → ECS container credentials → the EC2
+instance's attached role via IMDS), the same behavior the official AWS SDKs use when no explicit
+credentials are passed to their S3 client constructors. No separate "auth mode" toggle exists —
+it's simply whichever of the two the Connection record has configured. Static keys are unaffected
+and remain fully supported for connections that need them (e.g. a host without its own IAM
+identity, or a bucket in a different AWS account than the host's role can assume).
+
+Filling in only one of the two fields (e.g. a leftover Secret Access Key after clearing the Access
+Key ID) is rejected with a clear error rather than silently doing something unexpected either way
+— provide both, or clear both.
+
+### Testing a connection
+
+Every Connection record has a built-in **Test Connection** button (AtroCore's generic
+`Connection` detail view). For `s3` connections this performs a real `HeadBucket` call against the
+configured bucket — using whichever credential path is configured, static keys or an IAM role — and
+reports success or a clear failure reason, so a misconfiguration (missing role, wrong bucket, bad
+region) is caught immediately rather than on the first real file upload.
+
 ### IAM policy (AWS)
 
 Least-privilege policy for the bucket/prefix this addon actually needs — note `ListBucket` is
 **not** required (this addon's integrity `scan()` walks `File` database records, not the bucket, so
-it never calls `ListObjectsV2`):
+it never calls `ListObjectsV2`). Attach this to whichever principal is actually authenticating —
+the IAM user behind a static access key, or the IAM role attached to the host, if you're using the
+role-based path above instead:
 
 ```json
 {
@@ -163,11 +194,6 @@ fallback path isn't mistaken for dead code.
   detects missing objects and content drift for records AtroCore already knows about; it does not
   detect orphan objects that exist in the bucket with no matching database record (a separate,
   much rarer failure mode).
-- **No "Test Connection" button for the `s3` connection type in this release.** AtroCore's
-  `Connection` entity supports a pluggable per-type test-connection driver
-  (`Atro\ConnectionType\ConnectionInterface`); this addon doesn't implement one yet. Connectivity
-  can be verified today via `Atro\Core\FileStorage\FileStorageInterface::isAvailable()` (used
-  internally, e.g. by `File::isStorageAvailable()`) or simply by uploading a file through the UI.
 - **Concurrency**: a second reupload of the same file while one is already in progress fails fast
   with *"This file is currently being updated by another process. Please try again in a few
   seconds."* rather than queuing — see `PLAN.md` for why (avoiding PHP-FPM worker pileups) and for
