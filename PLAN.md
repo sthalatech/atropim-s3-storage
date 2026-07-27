@@ -347,7 +347,12 @@ On `Storage.json`, append `"s3"` to `fields.type.options` via `__APPEND__`, then
   the AWS SDKs' own standard behavior, so a host with an IAM role already attached (the AWS-
   recommended posture vs. long-lived static keys) needs no credentials configured on the Connection
   at all. A partially-filled pair (one field set, the other blank) is rejected with a clear error
-  rather than silently guessing which mode was intended.
+  rather than silently guessing which mode was intended. **This check compares the DECRYPTED
+  secret, not the raw stored value** — `Atro\Services\Connection::encryptPasswordFields()`
+  encrypts every password-type field on save, including blank ones, so a Secret Access Key the
+  user correctly left empty is persisted as `encrypt('')`, a non-empty ciphertext, not `''`.
+  Checking the raw stored value (a real bug shipped in v1.1.0, fixed in v1.1.1) would falsely
+  reject every previously-saved IAM-role connection.
 - S3 object keys are derived from `File` entity UUIDs (already collision-resistant, not
   user-controlled path input) — still explicitly validate/sanitize before use to close off any
   path-traversal/injection vector.

@@ -43,7 +43,8 @@ final class S3ClientFactory
     public function createFromConnection(ConnectionEntity $connection): S3Client
     {
         $accessKeyId = trim((string)$connection->get('s3AccessKeyId'));
-        $hasSecret = trim((string)$connection->get('s3SecretAccessKey')) !== '';
+        $accessKeySecret = $this->decryptSecret((string)$connection->get('s3SecretAccessKey'));
+        $hasSecret = trim($accessKeySecret) !== '';
 
         if ($accessKeyId === '' && $hasSecret) {
             throw new Error(
@@ -52,8 +53,6 @@ final class S3ClientFactory
                 "own IAM role instead of static keys."
             );
         }
-
-        $accessKeySecret = $accessKeyId !== '' ? $this->decryptSecret((string)$connection->get('s3SecretAccessKey')) : '';
 
         $endpoint = trim((string)$connection->get('s3Endpoint'));
         $verifyTls = $connection->get('s3VerifyTls');
